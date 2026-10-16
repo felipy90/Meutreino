@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meu Treino</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#f4f5f7;color:#111}
+#app{max-width:480px;margin:0 auto;padding:16px 16px 90px}
+h1{font-size:22px} h2{font-size:17px;margin:0 0 8px}
+form{display:grid;gap:8px;margin-bottom:12px}
+input,button{font-size:16px;padding:10px;border-radius:8px;border:1px solid #ccc}
+button{background:#2563eb;color:#fff;border:0}
+button.sec{background:#e5e7eb;color:#111} button.del{background:#dc2626;padding:4px 8px;font-size:13px}
+.card{background:#fff;border-radius:12px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0}
+.tabs{display:flex;gap:8px;margin:12px 0} .tabs button{flex:1}
+.msg{color:#dc2626;margin:0} .sub{color:#555;font-size:14px}
+#timer{position:fixed;left:0;right:0;bottom:0;background:#111;color:#fff;text-align:center;padding:18px;font-size:18px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="timer" hidden onclick="pararTimer()"></div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+// >>> COLE AQUI A URL E A CHAVE ANON DO SEU SUPABASE <<<
+const SUPABASE_URL = 'COLE_AQUI_A_URL';
+const SUPABASE_KEY = 'COLE_AQUI_A_CHAVE';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = s => document.querySelector(s);
+const app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let user = null, tmr = null;
+
+/* ---------- LOGIN / CADASTRO ---------- */
+function telaAuth(modo = 'login', msg = '') {
+  const login = modo === 'login';
+  app.innerHTML = `<h1>${login ? 'Entrar' : 'Criar conta'}</h1>
+  <form onsubmit="return enviarAuth(event,'${modo}')">
+    ${login ? '' : '<input id="nome" placeholder="Nome" required>'}
+    <input id="email" type="email" placeholder="E-mail" required>
+    <input id="senha" type="password" placeholder="Senha (mín. 6 caracteres)" minlength="6" required>
+    <p class="msg">${esc(msg)}</p>
+    <button>${login ? 'Entrar' : 'Cadastrar'}</button>
+  </form>
+  <a href="#" onclick="telaAuth('${login ? 'cadastro' : 'login'}');return false">${login ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Entrar'}</a>`;
+}
+async function enviarAuth(e, modo) {
+  e.preventDefault();
+  const email = $('#email').value, password = $('#senha').value;
+  if (modo === 'login') {
+    const { error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) { telaAuth('login', 'E-mail ou senha incorretos.'); return false; }
+  } else {
+    const { data, error } = await sb.auth.signUp({ email, password, options: { data: { nome: $('#nome').value } } });
+    if (error) { telaAuth('cadastro', error.message); return false; }
+    if (!data.session) { telaAuth('login', 'Conta criada! Confirme o e-mail e depois entre.'); return false; }
+  }
+  iniciar();
+  return false;
+}
+async function sair() { await sb.auth.signOut(); user = null; telaAuth(); }
+
+/* ---------- ESTRUTURA ---------- */
+function moldura(tab, corpo) {
+  const nome = esc(user.user_metadata?.nome || 'atleta');
+  app.innerHTML = `<div class="row"><h1>Olá, ${nome}!</h1><button class="sec" onclick="sair()">Sair</button></div>
+  <div class="tabs"><button class="${tab === 'peso' ? '' : 'sec'}" onclick="telaPeso()">Peso</button>
+  <button class="${tab === 'treinos' ? '' : 'sec'}" onclick="telaTreinos()">Treinos</button></div>${corpo}`;
+}
+
+/* ---------- PESO ---------- */
+function grafico(d) {
+  if (d.length < 2) return '<p class="sub">Registre 2 pesagens para ver o gráfico.</p>';
+  const ps = d.map(x => +x.peso), min = Math.min(...ps) - 1, max = Math.max(...ps) + 1;
+  const pts = ps.map((p, i) => `${10 + i * (300 / (ps.length - 1))},${130 - (p - min) / (max - min) * 120}`).join(' ');
+  const dif = (ps[ps.length - 1] - ps[0]).toFixed(1);
+  return `<svg viewBox="0 0 320 140" width="100%"><polyline fill="none" stroke="#2563eb" stroke-width="3" points="${pts}"/></svg>
+  <p class="sub">${ps[0]} kg → ${ps[ps.length - 1]} kg (${dif} kg)</p>`;
+}
+async function telaPeso() {
+  const r = await sb.from('pesagens').select('*').eq('user_id', user.id).order('data');
+  const d = r.data || [];
+  const hoje = new Date().toISOString().slice(0, 10);
+  moldura('peso', `<div class="card"><h2>Registrar peso</h2>
+    <form onsubmit="return salvarPeso(event)">
+      <input id="data" type="date" value="${hoje}" required>
+      <input id="peso" type="number" step="0.1" placeholder="Peso (kg)" required>
+      <button>Salvar</button></form></div>
+    <div class="card"><h2>Evolução</h2>${grafico(d)}</div>
+    <div class="card"><h2>Histórico</h2>${d.slice().reverse().map(x =>
+      `<div class="row"><span>${x.data.split('-').reverse().join('/')} — <b>${x.peso} kg</b></span>
+      <button class="del" onclick="apagarPeso('${x.id}')">Apagar</button></div>`).join('') || '<p class="sub">Nada ainda.</p>'}</div>`);
+}
+async function salvarPeso(e) {
+  e.preventDefault();
+  const { error } = await sb.from('pesagens').upsert({ user_id: user.id, data: $('#data').value, peso: +$('#peso').value }, { onConflict: 'user_id,data' });
+  if (error) alert(error.message);
+  telaPeso(); return false;
+}
+async function apagarPeso(id) { await sb.from('pesagens').delete().eq('id', id); telaPeso(); }
+
+/* ---------- TREINOS ---------- */
+async function telaTreinos() {
+  const r = await sb.from('treinos')
+    .select('id,nome,treino_exercicios(id,ordem,series,repeticoes,descanso_seg,carga_kg,exercicios(nome))')
+    .eq('user_id', user.id).order('nome');
+  if (r.error) alert(r.error.message);
+  const t = r.data || [];
+  moldura('treinos', `<div class="card"><h2>Novo treino</h2>
+    <form onsubmit="return novoTreino(event)"><input id="tnome" placeholder="Ex.: Treino A - Peito e tríceps" required><button>Criar treino</button></form></div>
+    ${t.map(x => `<div class="card"><div class="row"><h2>${esc(x.nome)}</h2><button class="del" onclick="apagarTreino('${x.id}')">Apagar</button></div>
+      ${(x.treino_exercicios || []).sort((a, b) => a.ordem - b.ordem).map(i => `<div class="row">
+        <span>${esc(i.exercicios?.nome)}<br><span class="sub">${i.series}x${i.repeticoes} • descanso ${i.descanso_seg}s${i.carga_kg ? ' • ' + i.carga_kg + ' kg' : ''}</span></span>
+        <span><button class="sec" onclick="descanso(${i.descanso_seg})">⏱</button> <button class="del" onclick="apagarItem('${i.id}')">X</button></span></div>`).join('')}
+      <form onsubmit="return addEx(event,'${x.id}')">
+        <input name="n" placeholder="Exercício (ex.: Supino reto)" required>
+        <input name="s" type="number" placeholder="Séries" value="3" required>
+        <input name="r" type="number" placeholder="Repetições" value="10" required>
+        <input name="d" type="number" placeholder="Descanso (segundos)" value="60" required>
+        <input name="c" type="number" step="0.5" placeholder="Carga em kg (opcional)">
+        <button class="sec">+ Adicionar exercício</button></form></div>`).join('')}`);
+}
+async function novoTreino(e) {
+  e.preventDefault();
+  const { error } = await sb.from('treinos').insert({ user_id: user.id, nome: $('#tnome').value });
+  if (error) alert(error.message);
+  telaTreinos(); return false;
+}
+async function apagarTreino(id) { if (confirm('Apagar este treino?')) { await sb.from('treinos').delete().eq('id', id); telaTreinos(); } }
+async function apagarItem(id) { await sb.from('treino_exercicios').delete().eq('id', id); telaTreinos(); }
+async function addEx(e, tid) {
+  e.preventDefault();
+  const f = e.target, nome = f.n.value.trim();
+  let q = await sb.from('exercicios').select('id').ilike('nome', nome).or(`user_id.is.null,user_id.eq.${user.id}`).limit(1);
+  let exId = q.data && q.data[0] && q.data[0].id;
+  if (!exId) {
+    const ins = await sb.from('exercicios').insert({ user_id: user.id, nome }).select('id').single();
+    if (ins.error) { alert(ins.error.message); return false; }
+    exId = ins.data.id;
+  }
+  const { error } = await sb.from('treino_exercicios').insert({
+    treino_id: tid, exercicio_id: exId, series: +f.s.value, repeticoes: +f.r.value,
+    descanso_seg: +f.d.value, carga_kg: f.c.value ? +f.c.value : null
+  });
+  if (error) alert(error.message);
+  telaTreinos(); return false;
+}
+
+/* ---------- CRONÔMETRO DE DESCANSO ---------- */
+function descanso(seg) {
+  clearInterval(tmr);
+  let r = seg; const el = $('#timer'); el.hidden = false;
+  const tick = () => {
+    el.textContent = 'Descanso: ' + r + 's (toque para fechar)';
+    if (r-- <= 0) {
+      clearInterval(tmr);
+      el.textContent = 'Descanso acabou! Próxima série 💪';
+      if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+    }
+  };
+  tick(); tmr = setInterval(tick, 1000);
+}
+function pararTimer() { clearInterval(tmr); $('#timer').hidden = true; }
+
+/* ---------- INÍCIO ---------- */
+async function iniciar() {
+  const { data } = await sb.auth.getSession();
+  if (!data.session) return telaAuth();
+  user = data.session.user;
+  telaPeso();
+}
+iniciar();
+</script>
+</body>
+</html>
